@@ -16,7 +16,7 @@ const UniversalTokenCounter = require('./services/universalTokenCounter');
 
 // Import routes (these need to be updated to use new services)
 const userStateRoutes = require('./routes/userState');
-const secureFileRoutes = require('./routes/secureFileProcessor');
+const secureFileRoutes = require('./routes/fileProcessor');
 
 /**
  * PRODUCTION-READY QWINAI SERVER
