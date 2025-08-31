@@ -113,13 +113,16 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
         }
 
         if (!userFound) {
-            // Truly new user - return secure default state
+            // Truly new user - return secure default state with CORRECT available credits
             const today = new Date().toISOString().split('T')[0];
             const defaultState = {
                 deviceId,
                 deviceFingerprint: fingerprint || "",
-                creditsConsumedTodayChat: 0,
-                creditsConsumedTodayImage: 0,
+                // Return AVAILABLE credits, not consumed credits
+                availableChatCredits: 15,      // Daily default for chat
+                availableImageCredits: 20,     // Daily default for images  
+                creditsConsumedTodayChat: 0,   // Keep for backwards compatibility
+                creditsConsumedTodayImage: 0,  // Keep for backwards compatibility
                 hasActiveSubscription: false,
                 subscriptionType: null,
                 subscriptionEndTime: 0,
@@ -130,7 +133,7 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
                 serverVersion: "2.0.0"
             };
             
-            console.log(`👤 NEW USER detected: ${deviceId} (fingerprint: ${fingerprint ? fingerprint.substring(0, 8) + '...' : 'none'})`);
+            console.log(`👤 NEW USER detected: ${deviceId} - Available credits: chat=15, image=20 (fingerprint: ${fingerprint ? fingerprint.substring(0, 8) + '...' : 'none'})`);
             req.monitoring?.recordEvent('NEW_USER_DETECTED', { deviceId, hasFingerprint: !!fingerprint });
             
             return res.json(defaultState);
@@ -165,6 +168,8 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
                 `UPDATE user_states 
                  SET credits_consumed_today_chat = 0, 
                      credits_consumed_today_image = 0, 
+                     ad_credits_chat_today = 0,
+                     ad_credits_image_today = 0,
                      tracking_date = $1,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE device_id = $2`,
@@ -174,6 +179,8 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             creditsReset = true;
             fullUserState.credits_consumed_today_chat = 0;
             fullUserState.credits_consumed_today_image = 0;
+            fullUserState.ad_credits_chat_today = 0;
+            fullUserState.ad_credits_image_today = 0;
             fullUserState.tracking_date = today;
             
             req.monitoring?.recordEvent('DAILY_CREDITS_RESET', { deviceId });
@@ -181,12 +188,38 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             console.log(`✅ Same day detected, preserving credits: chat=${fullUserState.credits_consumed_today_chat}, image=${fullUserState.credits_consumed_today_image}`);
         }
 
+        // Calculate AVAILABLE credits (this is what the client needs!)
+        const DAILY_CHAT_CREDITS = 15;
+        const DAILY_IMAGE_CREDITS = 20;
+        const MAX_AD_CHAT_CREDITS = 10;   // From ads
+        const MAX_AD_IMAGE_CREDITS = 10;  // From ads
+        
+        // Get ad credits earned today (if implemented in DB)
+        const adChatCreditsEarned = fullUserState.ad_credits_chat_today || 0;
+        const adImageCreditsEarned = fullUserState.ad_credits_image_today || 0;
+        
+        // Total daily allowance = base + ad credits
+        const totalChatAllowance = DAILY_CHAT_CREDITS + adChatCreditsEarned;
+        const totalImageAllowance = DAILY_IMAGE_CREDITS + adImageCreditsEarned;
+        
+        // Available = Total allowance - consumed
+        const availableChatCredits = Math.max(0, totalChatAllowance - fullUserState.credits_consumed_today_chat);
+        const availableImageCredits = Math.max(0, totalImageAllowance - fullUserState.credits_consumed_today_image);
+
         // Enhanced response with security metadata
         const responseState = {
             deviceId: fullUserState.device_id,
             deviceFingerprint: fullUserState.device_fingerprint,
+            // Return AVAILABLE credits (what client expects)
+            availableChatCredits: availableChatCredits,
+            availableImageCredits: availableImageCredits,
+            // Keep consumed for debugging/backwards compatibility
             creditsConsumedTodayChat: fullUserState.credits_consumed_today_chat,
             creditsConsumedTodayImage: fullUserState.credits_consumed_today_image,
+            // Ad credit info
+            adCreditsEarnedChat: adChatCreditsEarned,
+            adCreditsEarnedImage: adImageCreditsEarned,
+            canEarnMoreAdCredits: adChatCreditsEarned < MAX_AD_CHAT_CREDITS || adImageCreditsEarned < MAX_AD_IMAGE_CREDITS,
             hasActiveSubscription: fullUserState.has_active_subscription,
             subscriptionType: fullUserState.subscription_type,
             subscriptionEndTime: fullUserState.subscription_end_time || 0,
@@ -201,7 +234,7 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             }
         };
 
-        console.log(`✅ User state retrieved: chat=${responseState.creditsConsumedTodayChat}, image=${responseState.creditsConsumedTodayImage}, subscribed=${responseState.hasActiveSubscription}`);
+        console.log(`✅ User state retrieved: AVAILABLE credits: chat=${responseState.availableChatCredits}, image=${responseState.availableImageCredits}, consumed: chat=${responseState.creditsConsumedTodayChat}, image=${responseState.creditsConsumedTodayImage}, subscribed=${responseState.hasActiveSubscription}`);
         
         req.monitoring?.recordPerformance('GET_USER_STATE', Date.now() - startTime);
         res.json(responseState);
@@ -225,7 +258,8 @@ router.put('/:deviceId', validateDeviceId, validateUserState, handleValidationEr
         const userState = req.body;
 
         console.log(`💾 [${req.ip}] Updating user state for device: ${deviceId}`);
-        console.log(`   Credits: chat=${userState.creditsConsumedTodayChat}, image=${userState.creditsConsumedTodayImage}`);
+        console.log(`   Credits CONSUMED: chat=${userState.creditsConsumedTodayChat}, image=${userState.creditsConsumedTodayImage}`);
+        console.log(`   Credits AVAILABLE after consumption: chat=${15 - userState.creditsConsumedTodayChat}, image=${20 - userState.creditsConsumedTodayImage}`);
         console.log(`   Subscription: ${userState.hasActiveSubscription} (${userState.subscriptionType || 'none'})`);
 
         // Enhanced security: Check for device fingerprint conflicts
@@ -432,6 +466,189 @@ router.get('/:deviceId/stats', validateDeviceId, handleValidationErrors, async (
         
         res.status(500).json({
             error: 'Failed to get user statistics',
+            message: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
+        });
+    }
+});
+
+// NEW: Dedicated credit consumption endpoint
+router.post('/:deviceId/consume-credits', validateDeviceId, handleValidationErrors, async (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        const { creditType, amount, fingerprint } = req.body; // creditType: 'chat' or 'image'
+        
+        console.log(`🔥 [${req.ip}] CONSUMING ${amount} ${creditType} credits for device: ${deviceId}`);
+        
+        // Validate input
+        if (!['chat', 'image'].includes(creditType) || !Number.isInteger(amount) || amount < 1 || amount > 10) {
+            return res.status(400).json({
+                error: 'Invalid credit consumption request',
+                message: 'creditType must be "chat" or "image", amount must be 1-10'
+            });
+        }
+
+        // Find user by device_id or fingerprint
+        let user = await req.db.query('SELECT * FROM user_states WHERE device_id = $1', [deviceId]);
+        
+        if (user.rows.length === 0 && fingerprint) {
+            console.log(`🔍 Device not found, checking by fingerprint: ${fingerprint.substring(0, 8)}...`);
+            user = await req.db.query('SELECT * FROM user_states WHERE device_fingerprint = $1', [fingerprint]);
+            
+            if (user.rows.length > 0) {
+                console.log(`🔒 REINSTALL DETECTED: Found user by fingerprint, updating device_id from ${user.rows[0].device_id} to ${deviceId}`);
+                await req.db.query(
+                    'UPDATE user_states SET device_id = $1, updated_at = CURRENT_TIMESTAMP WHERE device_fingerprint = $2',
+                    [deviceId, fingerprint]
+                );
+                user.rows[0].device_id = deviceId; // Update local reference
+            }
+        }
+        
+        if (user.rows.length === 0) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'User must be registered before consuming credits'
+            });
+        }
+
+        const currentUser = user.rows[0];
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Check if daily reset needed
+        const dbDate = currentUser.tracking_date instanceof Date 
+            ? currentUser.tracking_date.toISOString().split('T')[0]
+            : currentUser.tracking_date?.toString()?.split('T')[0] || '';
+            
+        if (dbDate !== today) {
+            console.log(`🔄 Daily reset needed before consumption: ${dbDate} → ${today}`);
+            await req.db.query(
+                `UPDATE user_states SET credits_consumed_today_chat = 0, credits_consumed_today_image = 0, ad_credits_chat_today = 0, ad_credits_image_today = 0, tracking_date = $1 WHERE device_id = $2`,
+                [today, deviceId]
+            );
+            currentUser.credits_consumed_today_chat = 0;
+            currentUser.credits_consumed_today_image = 0;
+            currentUser.ad_credits_chat_today = 0;
+            currentUser.ad_credits_image_today = 0;
+        }
+        
+        // Calculate current consumption and check limits
+        const currentConsumed = creditType === 'chat' ? currentUser.credits_consumed_today_chat : currentUser.credits_consumed_today_image;
+        const dailyLimit = creditType === 'chat' ? 25 : 30; // 15+10 for chat, 20+10 for image
+        const newConsumed = currentConsumed + amount;
+        
+        if (newConsumed > dailyLimit) {
+            const remaining = Math.max(0, dailyLimit - currentConsumed);
+            return res.status(429).json({
+                error: 'Daily credit limit exceeded',
+                message: `Cannot consume ${amount} ${creditType} credits. Daily limit: ${dailyLimit}, already consumed: ${currentConsumed}, remaining: ${remaining}`
+            });
+        }
+        
+        // Update consumption
+        const updateField = creditType === 'chat' ? 'credits_consumed_today_chat' : 'credits_consumed_today_image';
+        await req.db.query(
+            `UPDATE user_states SET ${updateField} = $1, updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
+            [newConsumed, deviceId]
+        );
+        
+        // Calculate remaining credits
+        const availableAfter = dailyLimit - newConsumed;
+        
+        console.log(`✅ CONSUMED ${amount} ${creditType} credits for ${deviceId}: ${currentConsumed} → ${newConsumed} (${availableAfter} remaining)`);
+        
+        res.json({
+            success: true,
+            message: `Successfully consumed ${amount} ${creditType} credits`,
+            data: {
+                creditType,
+                amountConsumed: amount,
+                totalConsumedToday: newConsumed,
+                availableCredits: availableAfter,
+                dailyLimit: dailyLimit
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Consume credits error:', error);
+        res.status(500).json({
+            error: 'Failed to consume credits',
+            message: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
+        });
+    }
+});
+
+// NEW: Add ad credits endpoint
+router.post('/:deviceId/add-ad-credits', validateDeviceId, handleValidationErrors, async (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        const { creditType, fingerprint } = req.body; // creditType: 'chat' or 'image'
+        
+        console.log(`📺 [${req.ip}] Adding AD credits (${creditType}) for device: ${deviceId}`);
+        
+        // Validate input
+        if (!['chat', 'image'].includes(creditType)) {
+            return res.status(400).json({
+                error: 'Invalid credit type',
+                message: 'creditType must be "chat" or "image"'
+            });
+        }
+
+        // Find user (with fingerprint fallback)
+        let user = await req.db.query('SELECT * FROM user_states WHERE device_id = $1', [deviceId]);
+        
+        if (user.rows.length === 0 && fingerprint) {
+            user = await req.db.query('SELECT * FROM user_states WHERE device_fingerprint = $1', [fingerprint]);
+            if (user.rows.length > 0) {
+                await req.db.query(
+                    'UPDATE user_states SET device_id = $1 WHERE device_fingerprint = $2',
+                    [deviceId, fingerprint]
+                );
+            }
+        }
+        
+        if (user.rows.length === 0) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'User must be registered before adding ad credits'
+            });
+        }
+
+        const currentUser = user.rows[0];
+        const adField = creditType === 'chat' ? 'ad_credits_chat_today' : 'ad_credits_image_today';
+        const currentAdCredits = currentUser[adField] || 0;
+        const maxAdCredits = 10;
+        
+        if (currentAdCredits >= maxAdCredits) {
+            return res.status(429).json({
+                error: 'Daily ad credit limit reached',
+                message: `Maximum ${maxAdCredits} ad credits per day for ${creditType}`
+            });
+        }
+        
+        // Add ad credit to database
+        const newAdCredits = currentAdCredits + 1;
+        await req.db.query(
+            `UPDATE user_states SET ${adField} = $1, updated_at = CURRENT_TIMESTAMP WHERE device_id = $2`,
+            [newAdCredits, deviceId]
+        );
+        
+        console.log(`✅ Added 1 AD credit for ${creditType}: ${currentAdCredits} → ${newAdCredits}`);
+        
+        res.json({
+            success: true,
+            message: `Successfully added 1 ${creditType} credit from ad`,
+            data: {
+                creditType,
+                adCreditsToday: newAdCredits,
+                maxAdCredits: maxAdCredits,
+                canWatchMore: newAdCredits < maxAdCredits
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Add ad credits error:', error);
+        res.status(500).json({
+            error: 'Failed to add ad credits',
             message: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
         });
     }
