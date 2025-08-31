@@ -108,14 +108,14 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
 
         // Reset daily credits if new day
         let creditsReset = false;
-        if (fullUserState.current_date !== today) {
-            console.log(`🔄 Resetting daily credits for device: ${deviceId} (${fullUserState.current_date} → ${today})`);
+        if (fullUserState.tracking_date !== today) {
+            console.log(`🔄 Resetting daily credits for device: ${deviceId} (${fullUserState.tracking_date} → ${today})`);
             
             await req.db.query(
                 `UPDATE user_states 
                  SET credits_consumed_today_chat = 0, 
                      credits_consumed_today_image = 0, 
-                     current_date = $1,
+                     tracking_date = $1,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE device_id = $2`,
                 [today, deviceId]
@@ -124,7 +124,7 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             creditsReset = true;
             fullUserState.credits_consumed_today_chat = 0;
             fullUserState.credits_consumed_today_image = 0;
-            fullUserState.current_date = today;
+            fullUserState.tracking_date = today;
             
             req.monitoring?.recordEvent('DAILY_CREDITS_RESET', { deviceId });
         }
@@ -140,7 +140,7 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             subscriptionEndTime: fullUserState.subscription_end_time || 0,
             lastActive: Date.now(),
             appVersion: fullUserState.app_version || "18",
-            date: fullUserState.current_date,
+            date: fullUserState.tracking_date,
             userId: fullUserState.id?.toString(),
             serverVersion: "2.0.0",
             securityFlags: {
@@ -196,7 +196,7 @@ router.put('/:deviceId', validateDeviceId, validateUserState, handleValidationEr
             INSERT INTO user_states (
                 device_id, device_fingerprint, credits_consumed_today_chat, 
                 credits_consumed_today_image, has_active_subscription, subscription_type, 
-                subscription_end_time, current_date, app_version, updated_at
+                subscription_end_time, tracking_date, app_version, updated_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
             ON CONFLICT (device_id) DO UPDATE SET
                 device_fingerprint = EXCLUDED.device_fingerprint,
@@ -205,7 +205,7 @@ router.put('/:deviceId', validateDeviceId, validateUserState, handleValidationEr
                 has_active_subscription = EXCLUDED.has_active_subscription,
                 subscription_type = EXCLUDED.subscription_type,
                 subscription_end_time = EXCLUDED.subscription_end_time,
-                current_date = EXCLUDED.current_date,
+                tracking_date = EXCLUDED.tracking_date,
                 app_version = EXCLUDED.app_version,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id, created_at, updated_at
@@ -343,7 +343,7 @@ router.get('/:deviceId/stats', validateDeviceId, handleValidationErrors, async (
                 subscription_type,
                 created_at,
                 updated_at,
-                current_date,
+                tracking_date,
                 app_version
             FROM user_states 
             WHERE device_id = $1
@@ -367,7 +367,7 @@ router.get('/:deviceId/stats', validateDeviceId, handleValidationErrors, async (
                 subscriptionType: user.subscription_type,
                 accountAge: `${accountAge} days`,
                 lastUpdated: user.updated_at,
-                currentDate: user.current_date,
+                currentDate: user.tracking_date,
                 appVersion: user.app_version,
                 serverVersion: "2.0.0"
             },

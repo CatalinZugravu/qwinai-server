@@ -226,7 +226,7 @@ async function initializeDatabase() {
                 has_active_subscription BOOLEAN DEFAULT FALSE,
                 subscription_type VARCHAR(50),
                 subscription_end_time BIGINT DEFAULT 0,
-                current_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                tracking_date DATE NOT NULL DEFAULT CURRENT_DATE,
                 app_version VARCHAR(20),
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 total_sessions INT DEFAULT 1,
@@ -285,11 +285,7 @@ async function initializeDatabase() {
                 metric_type VARCHAR(50) NOT NULL,
                 metric_value NUMERIC NOT NULL,
                 metadata JSONB,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Index for time-series queries
-                INDEX idx_metrics_type_time (metric_type, recorded_at),
-                INDEX idx_metrics_time (recorded_at)
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -303,19 +299,14 @@ async function initializeDatabase() {
                 user_agent TEXT,
                 request_path TEXT,
                 event_details JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Index for security monitoring
-                INDEX idx_security_events_type_time (event_type, created_at),
-                INDEX idx_security_events_severity (severity, created_at),
-                INDEX idx_security_events_ip (source_ip, created_at)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
         // Create comprehensive indexes for performance
         await db.query(`
             CREATE INDEX IF NOT EXISTS idx_user_states_device_id ON user_states(device_id);
-            CREATE INDEX IF NOT EXISTS idx_user_states_current_date ON user_states(current_date);
+            CREATE INDEX IF NOT EXISTS idx_user_states_tracking_date ON user_states(tracking_date);
             CREATE INDEX IF NOT EXISTS idx_user_states_subscription ON user_states(has_active_subscription, subscription_end_time);
             CREATE INDEX IF NOT EXISTS idx_user_states_activity ON user_states(last_activity);
             
@@ -323,6 +314,13 @@ async function initializeDatabase() {
             CREATE INDEX IF NOT EXISTS idx_processed_files_expires ON processed_files(expires_at);
             CREATE INDEX IF NOT EXISTS idx_processed_files_mime_type ON processed_files(mime_type);
             CREATE INDEX IF NOT EXISTS idx_processed_files_processed_at ON processed_files(processed_at);
+            
+            CREATE INDEX IF NOT EXISTS idx_metrics_type_time ON system_metrics(metric_type, recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_metrics_time ON system_metrics(recorded_at);
+            
+            CREATE INDEX IF NOT EXISTS idx_security_events_type_time ON security_events(event_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_security_events_severity ON security_events(severity, created_at);
+            CREATE INDEX IF NOT EXISTS idx_security_events_ip ON security_events(source_ip, created_at);
         `);
 
         // Create stored procedures for common operations
@@ -578,8 +576,8 @@ if (process.env.NODE_ENV === 'production') {
                 UPDATE user_states 
                 SET credits_consumed_today_chat = 0,
                     credits_consumed_today_image = 0,
-                    current_date = $1
-                WHERE current_date < $1
+                    tracking_date = $1
+                WHERE tracking_date < $1
             `, [today]);
             console.log(`🔄 Reset daily credits for ${result.rowCount} users`);
         } catch (error) {
