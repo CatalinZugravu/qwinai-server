@@ -61,22 +61,63 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
     const startTime = Date.now();
     try {
         const { deviceId } = req.params;
+        const { fingerprint } = req.query; // Get fingerprint from query params
         
         console.log(`🔍 [${req.ip}] Getting user state for device: ${deviceId}`);
+        console.log(`🔍 Device fingerprint: ${fingerprint ? fingerprint.substring(0, 8) + '...' : 'not provided'}`);
         req.monitoring?.recordRequest('GET_USER_STATE', { deviceId, ip: req.ip });
 
-        // Check for device fingerprint conflicts (security measure)
-        const existingUser = await req.db.query(
+        // Step 1: Check by device_id (existing behavior)
+        let existingUser = await req.db.query(
             'SELECT device_id, device_fingerprint FROM user_states WHERE device_id = $1',
             [deviceId]
         );
 
-        if (existingUser.rows.length === 0) {
-            // New user - return secure default state
+        let userFound = false;
+        let userRecord = null;
+
+        if (existingUser.rows.length > 0) {
+            // Found by device_id
+            userRecord = existingUser.rows[0];
+            userFound = true;
+            console.log(`✅ User found by device_id: ${deviceId}`);
+        } else if (fingerprint && fingerprint.length >= 8) {
+            // Step 2: Check by device fingerprint (CRITICAL: prevents credit abuse on reinstall)
+            console.log(`🔍 Device_id not found, checking by fingerprint: ${fingerprint.substring(0, 8)}...`);
+            
+            const fingerprintUser = await req.db.query(
+                'SELECT device_id, device_fingerprint FROM user_states WHERE device_fingerprint = $1',
+                [fingerprint]
+            );
+
+            if (fingerprintUser.rows.length > 0) {
+                userRecord = fingerprintUser.rows[0];
+                userFound = true;
+                
+                console.log(`🔒 IMPORTANT: User found by fingerprint! This is a reinstall scenario.`);
+                console.log(`🔒 Previous device_id: ${userRecord.device_id} → New device_id: ${deviceId}`);
+                
+                // Update the device_id to the new one (user reinstalled app)
+                await req.db.query(
+                    'UPDATE user_states SET device_id = $1, updated_at = CURRENT_TIMESTAMP WHERE device_fingerprint = $2',
+                    [deviceId, fingerprint]
+                );
+                
+                console.log(`✅ Updated device_id from ${userRecord.device_id} to ${deviceId} for fingerprint ${fingerprint.substring(0, 8)}...`);
+                req.monitoring?.recordEvent('DEVICE_ID_UPDATED_ON_REINSTALL', { 
+                    oldDeviceId: userRecord.device_id, 
+                    newDeviceId: deviceId, 
+                    fingerprint: fingerprint.substring(0, 8) 
+                });
+            }
+        }
+
+        if (!userFound) {
+            // Truly new user - return secure default state
             const today = new Date().toISOString().split('T')[0];
             const defaultState = {
                 deviceId,
-                deviceFingerprint: "",
+                deviceFingerprint: fingerprint || "",
                 creditsConsumedTodayChat: 0,
                 creditsConsumedTodayImage: 0,
                 hasActiveSubscription: false,
@@ -89,19 +130,20 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
                 serverVersion: "2.0.0"
             };
             
-            console.log(`👤 New user detected: ${deviceId}`);
-            req.monitoring?.recordEvent('NEW_USER_DETECTED', { deviceId });
+            console.log(`👤 NEW USER detected: ${deviceId} (fingerprint: ${fingerprint ? fingerprint.substring(0, 8) + '...' : 'none'})`);
+            req.monitoring?.recordEvent('NEW_USER_DETECTED', { deviceId, hasFingerprint: !!fingerprint });
             
             return res.json(defaultState);
         }
 
-        const userState = existingUser.rows[0];
+        // Use the correct device_id for database queries (may have been updated above)
+        const currentDeviceId = deviceId;
         const today = new Date().toISOString().split('T')[0];
 
-        // Get full user state for existing user
+        // Get full user state for existing user (use current device_id)
         const fullUserResult = await req.db.query(
             'SELECT * FROM user_states WHERE device_id = $1',
-            [deviceId]
+            [currentDeviceId]
         );
         
         const fullUserState = fullUserResult.rows[0];
