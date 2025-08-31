@@ -150,8 +150,16 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
 
         // Reset daily credits if new day
         let creditsReset = false;
-        if (fullUserState.tracking_date !== today) {
-            console.log(`🔄 Resetting daily credits for device: ${deviceId} (${fullUserState.tracking_date} → ${today})`);
+        
+        // Fix date comparison - convert database date to string for comparison
+        const dbDate = fullUserState.tracking_date instanceof Date 
+            ? fullUserState.tracking_date.toISOString().split('T')[0]
+            : fullUserState.tracking_date?.toString()?.split('T')[0] || '';
+        
+        console.log(`🔍 Date comparison: DB date="${dbDate}", Today="${today}"`);
+        
+        if (dbDate !== today) {
+            console.log(`🔄 Resetting daily credits for device: ${deviceId} (${dbDate} → ${today})`);
             
             await req.db.query(
                 `UPDATE user_states 
@@ -169,6 +177,8 @@ router.get('/:deviceId', validateDeviceId, handleValidationErrors, async (req, r
             fullUserState.tracking_date = today;
             
             req.monitoring?.recordEvent('DAILY_CREDITS_RESET', { deviceId });
+        } else {
+            console.log(`✅ Same day detected, preserving credits: chat=${fullUserState.credits_consumed_today_chat}, image=${fullUserState.credits_consumed_today_image}`);
         }
 
         // Enhanced response with security metadata
