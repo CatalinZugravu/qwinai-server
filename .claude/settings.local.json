@@ -3,7 +3,8 @@
     "allow": [
       "Read(C:\\Users\\Catalin\\AndroidStudioProjects\\DeepSeekChat4/**)",
       "Read(C:\\Users\\Catalin\\AndroidStudioProjects\\DeepSeekChat4\\app/**)",
-      "Read(C:\\Users\\Catalin\\AndroidStudioProjects\\DeepSeekChat4\\app\\src\\main\\java\\com\\cyberflux\\qwinai\\credits/**)"
+      "Read(C:\\Users\\Catalin\\AndroidStudioProjects\\DeepSeekChat4\\app\\src\\main\\java\\com\\cyberflux\\qwinai\\credits/**)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []
